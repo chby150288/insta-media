@@ -1,0 +1,68 @@
+name: waiter
+on:
+  push:
+    branches: [main]
+    paths: ["wait/*.json"]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: waiter
+  cancel-in-progress: true
+jobs:
+  wait:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v5
+      - name: 다음 게시 시각까지 대기
+        id: plan
+        run: |
+          python3 - <<'PY'
+          import glob, json, datetime, os
+          now = datetime.datetime.now(datetime.timezone.utc)
+          ts = [datetime.datetime.fromisoformat(json.load(open(f))["publish_at"]) for f in glob.glob("wait/*.json")]
+          if not ts:
+              s = -1
+          else:
+              s = max(0, int((min(ts) - now).total_seconds()))
+          open(os.environ["GITHUB_OUTPUT"], "a").write(f"secs={s}\n")
+          PY
+      - if: steps.plan.outputs.secs != '-1'
+        run: |
+          S=${{ steps.plan.outputs.secs }}
+          if [ "$S" -gt 19800 ]; then sleep 19800; echo "again=1" >> $GITHUB_ENV; else sleep "$S"; fi
+      - name: 시간이 된 게시물을 insta-ops 게시 대기열로
+        if: steps.plan.outputs.secs != '-1' && env.again != '1'
+        env:
+          OPS_PAT: ${{ secrets.OPS_PAT }}
+        run: |
+          git config --global user.name "chby150288"
+          git config --global user.email "chby150288@users.noreply.github.com"
+          git pull -q
+          git clone -q "https://x-access-token:${OPS_PAT}@github.com/chby150288/insta-ops.git" /tmp/ops
+          python3 - <<'PY'
+          import glob, json, datetime, os, subprocess
+          now = datetime.datetime.now(datetime.timezone.utc)
+          for f in glob.glob("wait/*.json"):
+              w = json.load(open(f))
+              if datetime.datetime.fromisoformat(w["publish_at"]) > now: continue
+              src = f"/tmp/ops/scheduled/{w['job']}.json"
+              if os.path.exists(src):
+                  os.makedirs("/tmp/ops/queue", exist_ok=True)
+                  subprocess.run(["git", "-C", "/tmp/ops", "mv", src, f"/tmp/ops/queue/{w['job']}.json"], check=True)
+                  print("queued", w["job"])
+              else:
+                  print("already handled", w["job"])
+              subprocess.run(["git", "rm", "-q", f], check=True)
+          PY
+          (cd /tmp/ops && git commit -qm "정시 게시" && git push -q) || true
+          git commit -qm "대기 완료" && git push -q || true
+          echo "again=1" >> $GITHUB_ENV
+      - if: env.again == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git pull -q || true
+          if ls wait/*.json >/dev/null 2>&1; then gh workflow run waiter.yml --ref main; fi
