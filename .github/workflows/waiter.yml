@@ -49,7 +49,12 @@ jobs:
               w = json.load(open(f))
               if datetime.datetime.fromisoformat(w["publish_at"]) > now: continue
               src = f"/tmp/ops/scheduled/{w['job']}.json"
-              if os.path.exists(src):
+              if w["job"].startswith("test_"):
+                  os.makedirs("/tmp/ops/status", exist_ok=True)
+                  open("/tmp/ops/status/waiter_test.txt", "w").write(f"{w['job']} due {w['publish_at']} ran {now.isoformat()}\n")
+                  subprocess.run(["git", "-C", "/tmp/ops", "add", "status/waiter_test.txt"], check=True)
+                  print("test ok", w["job"])
+              elif os.path.exists(src):
                   os.makedirs("/tmp/ops/queue", exist_ok=True)
                   subprocess.run(["git", "-C", "/tmp/ops", "mv", src, f"/tmp/ops/queue/{w['job']}.json"], check=True)
                   print("queued", w["job"])
